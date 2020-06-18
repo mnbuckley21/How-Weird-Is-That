@@ -1,0 +1,147 @@
+---
+title: "iDigBio_tidytext"
+author: "Mikayla Buckley"
+date: "2/26/2020"
+output: pdf_document
+---
+
+```{r packages}
+library(tidyverse)
+library(tidytext)
+library(stringr)
+library(caret)
+library(tm)
+set.seed(1234)
+```
+
+## R Markdown
+
+```{r data_import}
+# get classified text data
+data <- read.csv("/Users/mikaylabuckley/Desktop/train.csv")
+test <- data$text
+
+# Tokenize taxonomic names
+
+tax_terms <- unique(tax_terms)
+count = 1
+for(term in tax_terms){
+  if(count%%50 == 0){
+    print(count)
+  }
+   test <- sub(term, 'TAX_TERM ', test)
+   count = count + 1
+}
+
+
+data$text <- test
+
+# topic labels
+class_labels <- tibble(
+  class = c(0,1),
+  label = c("Non-anomaly", "Anomaly")
+)
+
+(records <- as_tibble(data) %>%
+    mutate(text = as.character(text)) %>%
+    left_join(class_labels))
+```
+
+
+```{r tidy}
+### Create a tidy dataframe *compare results with and without numbers*
+### *** try subsetting/grouping tokens here ***
+#records <- slice(records, as.numeric(record_dtm$dimnames$Docs))
+
+(record_tokens <- records %>%
+    unnest_tokens(output = word, input = text) %>%
+    # *remove numbers
+    filter(!str_detect(word, "^[0-9]*$")) %>%
+    # remove stop words
+    anti_join(get_stopwords(language = "en", source = "snowball"))
+    # stem the words
+    ### mutate(word = SnowballC::wordStem(word))
+)
+```
+
+
+
+```{r matrix} 
+### Create document-term matrix
+(record_dtm <- record_tokens %>%
+    # get count of each token in each document
+    count(coreid, word) %>%
+    # create a document-term matrix with all features and tf weighting
+    cast_dtm(document = coreid, term = word, value = n))
+```
+
+### SKIP FOR NOW ###
+```{r weighting} 
+### Weighting (tf) *compare the results of tf vs. tf-idf*
+congress_tokens %>%
+  # get count of each token in each document
+  count(ID, word) %>%
+  # create a document-term matrix with all features and tf-idf weighting
+  cast_dtm(document = ID, term = word, value = n,
+           weighting = tm::weightTfIdf)
+```
+
+```{r sparse}
+### Remove sparse terms
+removeSparseTerms(record_dtm, sparse = .98)
+```
+
+```{r analysis}
+### Exploratory anyalysis
+(record_tfidf <- record_tokens %>%
+    count(label, word) %>%
+    bind_tf_idf(term = word, document = label, n = n))
+
+# sort the data frame and convert word to a factor column
+plot_record <- record_tfidf %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word))))
+
+# graph the top 10 tokens for categories
+plot_record %>%
+  filter(label %in% c("Non-anomaly", "Anomaly")) %>%
+  group_by(label) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder_within(word, tf_idf, label)) %>%
+  ggplot(aes(word, tf_idf)) +
+  geom_col() +
+  scale_x_reordered() +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~ label, scales = "free") +
+  coord_flip()
+```
+
+```{r model}
+### Estimate model
+record_slice <- records[which(record_dtm$dimnames$Docs %in% records$coreid),]
+record_rf <- train(x = as.matrix(record_dtm),
+                     y = factor(record_slice$class),
+                     method = "ranger",
+                     num.trees = 5,
+                     importance = "impurity",
+                     trControl = trainControl(method = "oob"))
+record_rf$finalModel
+```
+
+```{r}
+record_rf$finalModel %>%
+  # extract variable importance metrics
+  ranger::importance() %>%
+  # convert to a data frame
+  enframe(name = "variable", value = "varimp") %>%
+  top_n(n = 20, wt = varimp) %>%
+  # plot the metrics
+  ggplot(aes(x = fct_reorder(variable, varimp), y = varimp)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Token",
+       y = "Variable importance (higher is more important)")
+
+```
+

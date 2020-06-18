@@ -1,0 +1,45 @@
+---
+title: "iDigBio Tokenization (remove/replace taxonomic names)"
+output: html_notebook
+---
+
+*Use https://gnrd.globalnames.org/ to create an XML file with all taxonomic names in _raw_subset (parsed for "early") found in ⁨Macintosh HD⁩ ▸ ⁨Users⁩ ▸ ⁨mikaylabuckley⁩ ▸ ⁨Desktop⁩ ▸ ⁨DIS⁩ ▸ ⁨Mikayla_DwC_files*
+
+```{r}
+# Imort JSON file wtih list of taxonomic names
+### https://gnrd.globalnames.org/
+### https://blog.exploratory.io/working-with-json-data-in-very-simple-way-ad7ebcc0bb89
+
+library(rjson)
+library(jsonlite)
+library(tibble)
+
+# files <- c('/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/early_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/earlier_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/earliest_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/late_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/later_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/latest_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/abnormal_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/abnormally_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/odd_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/oddly_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/than_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/unusual_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/unusually_DwCA/dictionary.json',
+#            '/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/weird_DwCA/dictionary.json')
+# 
+# tax_terms <- c()
+# for (file in files){
+#   data <- fromJSON(file(file))
+#   data_flat <- flatten(data.frame(data))
+#   data_tbl <- as_tibble(data_flat)
+#   tax_terms <- append(tax_terms,data_tbl$names.name)
+# }
+
+json_file <- '/Users/mikaylabuckley/Desktop/terms.json'
+data <- fromJSON(paste(readLines(json_file), collapse=""))
+data_flat <- flatten(data.frame(data))
+data_tbl <- as_tibble(data_flat)
+tax_terms <- data_tbl$names.name
+```

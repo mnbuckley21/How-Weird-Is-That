@@ -1,0 +1,1504 @@
+---
+title: "iDigBio Text Mining and Training Set Creation"
+author: "Mikayla Buckley"
+date: "1/24/2020"
+output: html_document
+---
+# To Do:
+- Analysis for "weird" expedition
+- Prepare next expedition (?)
+- Check weird results with NfN export
+- Crosstrek ids for ML ready training set
+- Clean up code
+
+# How to run:
+- Download files from iDigBio (see https://api.idigbio.org/v2/download/?rq={%22data.dwc:occurrenceRemarks%22:%20%22early%22,%22hasImage%22:%20true}&email={mnb17@my.fsu.edu})
+- Use R script to subset the files
+- Update iDigBio DwCA files based on Robert's notes
+- Upload files into Biospex
+- Add subjects to expeditions
+- Descriptive analysis of occurrenceRemarks using quanteda R package and OpenRefine software
+
+# Links:
+https://pypi.org/project/idigbio/
+https://tutorials.quanteda.io/introduction/
+https://www.r-bloggers.com/reading-html-pages-in-r-for-text-processing/
+https://stackoverflow.com/questions/35120167/convert-json-url-to-r-data-frame
+http://search.idigbio.org/v2/search/records/?rq=%7B%22data.dwc:occurrenceRemarks%22%3A+%22latest%22%2C+%22hasImage%22%3A+true%7Dlimit=10000
+https://cran.r-project.org/web/packages/corpus/vignettes/corpus.html
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Library imports
+```{r packages, echo=FALSE}
+# library(quanteda, warn.conflicts = FALSE)
+library(jsonlite, warn.conflicts = FALSE)
+library(dplyr, warn.conflicts = FALSE)
+library(data.table, warn.conflicts = FALSE)
+```
+
+### NOTES FROM NATURE RESULTS
+```{r}
+# Import results from NfN file
+NFN_DIR = "/Users/mikaylabuckley/Desktop/"
+setwd(NFN_DIR)
+# "WORKING" document has first 34 records removed (Austin's tests)
+data = read.csv('NfN_4-3-20.csv')
+
+# Sort by subject_id column
+
+### Add workflow_id to metadata to separate expeditions 
+data <- select(data, c("EDITED_annotations", "subject_ids", "workflow_id"))
+data <- as.matrix(data)
+
+# Initialize counts for each subject_ids
+subj <- unique(data[,2])
+n = length(subj)
+cols <- c("subject_id", "T2_null", "T2_notext", "T2_yes", "T2_no", "T2_uncertain", "T2_maj", "T2_perc", "T0_yes", "T0_no", "T0_uncertain","T0_maj", "T0_perc", "T1_behav", "T1_dist", "T1_ecol", "T1_gen", "T1_morph", "T1_phen", "T1_other", "T1_uncertain", "T1_maj", "T1_perc")
+result <- array(data = NA,c(n,23)) 
+colnames(result) <- cols
+result[,1] <- subj
+
+further_review <- list()
+training_set <- list()
+ts_resp <- list()
+fr_resp <- list()
+
+for(j in 1:length(subj)){
+  # Set the current subject_id
+  current = subj[j]
+  
+  # Initialize all counts to 0 for each subject_id
+  T2_null = 0
+  T2_none = 0
+  T2_yes = 0
+  T2_no = 0
+  T2_uncertain = 0
+
+  T0_yes = 0
+  T0_no = 0
+  T0_uncertain = 0
+
+  T1_behav = 0
+  T1_dist = 0
+  T1_ecol = 0
+  T1_gen = 0
+  T1_morph = 0
+  T1_phen = 0
+  T1_other = 0
+  T1_uncertain = 0
+  
+# Go through all subject_ids in data that match current (should be 3 or 5, but exceptions)
+  for(i in 1:(length(data)/3)){
+    if(!is.null(data[i,2]) && (as.integer(data[i,2]) == as.integer(current))){
+      response = data[i,1]
+      response <- strsplit(response, 'T')[[1]]
+      response <- response[response != " "]
+      response <- response[response != ""]
+        
+    # Check T2: does the target word appear in the text? (yes, no, uncertain, no text, missing)
+      task2 <- strsplit(response[1], ':')[[1]]
+      task2 <- task2[task2 != " "]
+        if(task2[1] == '2'){
+        ### T2 = NULL
+          if(task2[2] == ' null'){
+            T2_null = T2_null + 1
+          }
+        ### T2 = NO TEXT
+          else if(task2[2] == 'Missing' || task2[2] == '  Missing' || task2[2] == ' Missing' || task2[2] == '  Missing ' || task2[2] == 'null'){
+            T2_none = T2_none + 1
+          }
+        ### T2 = YES
+          else if(task2[2] == ' Yes' || task2[2] == ' Yes ' || task2[2] == 'Yes '){
+            T2_yes = T2_yes + 1
+        
+            # Check T0: does the text represent an anomally? (yes, no, uncertain)
+              task0 <- strsplit(response[2], ':')[[1]]
+              if(!is.na(task0[2])){
+                if(task0[2] == ' Yes' || task0[2] == ' Yes ' || task0[2] == 'Yes ' || task0[2] == 'Yes'){
+                  T0_yes = T0_yes + 1
+                }
+                else if(task0[2] == ' No' || task0[2] == ' No ' || task0[2] == '  No ' || task0[2] == 'No '){
+                  T0_no = T0_no + 1
+                }
+                else if(task0[2] == 'Uncertain' || task0[2] == ' Uncertain' || task0[2] == '  Uncertain' || task0[2] == '  Uncertain '){
+                  T0_uncertain = T0_uncertain + 1
+                }
+                else{
+                  print("Unrecognized response for task 0: ")
+                  print(task0[2])
+                }
+              }
+          }
+        ### T2 = NO
+          else if(task2[2] == ' No' || task2[2] == ' No ' || task2[2] == '  No ' || task2[2] == 'No '){
+            T2_no = T2_no +1
+            # Check T0: does the text represent an anomally? (yes, no, uncertain)
+              task0 <- strsplit(response[2], ':')[[1]]
+              if(!is.na(task0[2])){
+                if(task0[2] == ' Yes' || task0[2] == ' Yes ' || task0[2] == 'Yes ' || task0[2] == 'Yes'){
+                  # Add subject id to training set
+                  T0_yes = T0_yes + 1
+                }
+                else if(task0[2] == ' No' || task0[2] == ' No ' || task0[2] == '  No ' || task0[2] == 'No '){
+                  # Add subject id to training set
+                  T0_no = T0_no + 1
+                }
+                else if(task0[2] == 'Uncertain' || task0[2] == ' Uncertain' || task0[2] == '  Uncertain' || task0[2] == '  Uncertain '){
+                  # Add subject id to further_review
+                  T0_uncertain = T0_uncertain + 1
+                }
+                else{
+                  print("Unrecognized response for task 0: ")
+                  print(task0[2])
+                }
+              }
+          }
+        ### T2 = UNCERTAIN
+          else if(task2[2] == 'Uncertain' || task2[2] == ' Uncertain' || task2[2] == '  Uncertain'){
+            T2_uncertain = T2_uncertain + 1
+            # Check T0: does the text represent an anomally? (yes, no, uncertain)
+              task0 <- strsplit(response[2], ':')[[1]]
+              if(!is.na(task0[2])){
+                if(task0[2] == ' Yes' || task0[2] == ' Yes ' || task0[2] == 'Yes ' || task0[2] == 'Yes'){
+                  # Add subject id to training set
+                  T0_yes = T0_yes + 1
+                }
+                else if(task0[2] == ' No' || task0[2] == ' No ' || task0[2] == '  No ' || task0[2] == 'No '){
+                  # Add subject id to training set
+                  T0_no = T0_no + 1
+                }
+                else if(task0[2] == 'Uncertain' || task0[2] == ' Uncertain' || task0[2] == '  Uncertain' || task0[2] == '  Uncertain '){
+                  # Add subject id to further_review
+                  T0_uncertain = T0_uncertain + 1
+                }
+                else{
+                  print("Unrecognized response for task 0: ")
+                  print(task0[2])
+                }
+              }
+          }
+        ### T2 = UNKNOWN
+          else{
+            print("Unrecognized response for task 2: ")
+            print(task2[2])
+            break
+          }
+        }
+    }
+  }
+
+
+  answers2 <- c("null", "NoText", "Yes", "No", "Uncertain")
+  result[j,2] = T2_null
+  result[j,3] = T2_none
+  result[j,4] = T2_yes
+  result[j,5] = T2_no
+  result[j,6] = T2_uncertain
+  result[j,7] = answers2[which(result[j,2:6] == max(result[j,2:6]))[1]]
+  result[j,8] = max(as.integer(result[j,2:6]))/sum(as.integer(result[j,2:6]))
+  
+  answers0 <- c("Yes", "No", "Uncertain")
+  result[j,9] = T0_yes
+  result[j,10] = T0_no
+  result[j,11] = T0_uncertain
+  if((names(which(result[j,9:11] == max(result[j,9:11]))[1]) == "T0_yes") && result[j,9] == 0){
+    result[j,12] = answers0[3]
+    result[j,13] = NaN
+  }
+  else{
+    result[j,12] = answers0[which(result[j,9:11] == max(result[j,9:11]))[1]]
+    result[j,13] = max(as.integer(result[j,9:11]))/sum(as.integer(result[j,9:11]))
+  }
+  
+  answers1 <- c("Behavioral", "Distributional", "Ecological", "Genetic", "Morphological", "Phenological", "Other", "Uncertain")
+  result[j,14] = T1_behav
+  result[j,15] = T1_dist
+  result[j,16] = T1_ecol
+  result[j,17] = T1_gen
+  result[j,18] = T1_morph
+  result[j,19] = T1_phen
+  result[j,20] = T1_other
+  result[j,21] = T1_uncertain
+  result[j,22] = answers1[which(result == max(result[j,14:21]))[1]]
+  result[j,23] = max(as.integer(result[j,14:21]))/sum(as.integer(result[j,14:21]))
+  
+  not_placed = 0
+  ## Check Question 1 (T2)
+  if(result[j,7] == 'Yes' || result[j,7] == 'No' || result[j,7] == 'Uncertain'){
+    ## Check Question 2 (T0)
+    if(result[j,12] == 'Yes' || result[j,12] == 'No'){
+      if(as.double(result[j,8]) >= 0.60){
+        training_set <- append(training_set, as.integer(subj[j]))
+        ts_resp <- append(ts_resp, result[j,12])
+      }
+      else if(as.double(result[j,8]) < 0.60){
+        further_review <- append(further_review, as.integer(subj[j]))
+        fr_resp <- append(fr_resp, result[j,7])
+      }
+    }
+    else if(result[j,12] == 'Uncertain'){
+      further_review <- append(further_review, as.integer(subj[j]))
+      fr_resp <- append(fr_resp, result[j,7])
+    }
+    else{
+      print(result[j,12])
+      not_placed = not_placed + 1
+    }
+  }
+  else if(result[j,7] == 'NoText' || result[j,7] == 'null'){
+    further_review <- append(further_review, as.integer(subj[j]))
+    fr_resp <- append(fr_resp, result[j,7])
+  }
+  else{
+    print(result[j,7])
+    not_placed = not_placed + 1
+  }
+}
+
+# Preliminary T2 results
+  T2 <- result[,7]
+  yes = 0
+  no = 0
+  null = 0
+  none = 0
+  uncertain = 0
+  for(i in 1:length(T2)){
+    if(T2[i] == "Yes"){
+      yes = yes + 1
+    }
+    else if(T2[i] == "No"){
+      no = no + 1
+    }
+    else if(T2[i] == "null"){
+      null = null + 1
+    }
+    else if(T2[i] == "NoText"){
+      none = none + 1
+    }
+    else if(T2[i] == "Uncertain"){
+      uncertain = uncertain + 1
+    }
+  }
+  sum = yes+no+none+null+uncertain
+  ts = yes+no
+  print("Percent with target word in image: ")
+  print((yes/sum)*100)
+  print("Percent without target word in image: ")
+  print((no/sum)*100)
+  print("Percent with no text in image: ")
+  print((none/sum)*100)
+  print("Percent uncertain or null: ")
+  print(((uncertain+null)/sum)*100)
+  
+#------------------------------------------------------------------#
+# Preliminary T0 results
+  T0 <- result[,12]
+  yes0 = 0
+  no0 = 0
+  uncertain0 = 0
+  for(i in 1:length(T0)){
+    if(T0[i] == "Yes"){
+      yes0 = yes0 + 1
+    }
+    else if(T0[i] == "No"){
+      no0 = no0 + 1
+    }
+    else if(T0[i] == "Uncertain"){
+      uncertain0 = uncertain0 + 1
+    }
+  }
+  
+  training_data <- mapply(c, training_set, ts_resp)
+  train <- array(data = 'N/A', c(length(training_set),3))
+  train[,1] <- training_data[1,]
+  train[,2] <- training_data[2,]
+  for(i in 1:length(training_set)){
+    if(train[i,1] <= 37653040){
+      train[i,3] = "early"
+    }
+    else if((train[i,1]>37653040 || train[i,1]==37653040) && train[i,1]<37700000){
+      train[i,3] = "late"
+    }
+    else if(train[i,1]>37700000 && train[i,1]<39000000){
+      train[i,3] = "late2"
+    }
+    else if(train[i,1]>39000000){
+      train[i,3] = "odd"
+    }
+  }
+  
+  ## Check workflow id to determine expedition
+  further_data <- mapply(c, further_review, fr_resp)
+  review <- array(data = 'N/A', c(length(further_review),3))
+  review[,1] <- further_data[1,]
+  review[,2] <- further_data[2,]
+  for(i in 1:length(further_review)){
+    if(review[i,1] < 37653042){
+      review[i,3] = "early"
+    }
+    else if(( review[i,1]>37653042 || review[i,1]==37653042) && train[i,1]<37700000){
+      review[i,3] = "late"
+    }
+    else if(review[i,1]>37700000){
+      review[i,3] = "late2"
+    }
+  }
+  
+  ## Training set analysis (calculate number of anomalies and non-anomalies)
+  y = 0
+  n = 0
+  for(i in 1:length(training_set)){
+    if(train[i,2] == 'Yes'){
+      y = y + 1
+    }
+    else if(train[i,2] == 'No'){
+      n = n + 1
+    }
+    else{
+      print("Error, check training set")
+    }
+  }
+  sum_train = y + n
+  
+  sum0 = yes0+no0+uncertain0
+  ts0 = yes0+no0
+  print("Percent anomalous within training set: ")
+  print((yes0/ts0)*100)
+  print("Percent non-anomalous within training set: ")
+  print((no0/ts0)*100)
+  print("Percent uncertain (T0) of total: ")
+  print(((uncertain0)/sum0)*100)
+
+# Check to make sure that there is no overlap between the data sets, remove "Uncertains" 
+count_match = 0
+for(i in 1:length(training_set)){
+  for(j in 1:length(further_review)){
+    if(training_set[[i]] == further_review[[j]])
+      count_match = count_match + 1
+  }
+}
+
+## Calculate num anomalies and non-anomalies from early and late corpuses
+ea = 0
+en = 0
+la = 0
+ln = 0
+l2a = 0
+l2n = 0
+oa = 0
+on = 0
+for(i in 1:length(training_set)){
+  if(train[i,2] == 'Yes' && train[i,3] == 'early'){
+    ea = ea + 1
+  }
+  else if(train[i,2] == 'No' && train[i,3] == 'early'){
+    en = en + 1
+  }
+  else if(train[i,2] == 'Yes' && train[i,3] == 'late'){
+    la = la + 1
+  }
+  else if(train[i,2] == 'No' && train[i,3] == 'late'){
+    ln = ln + 1
+  }
+  else if(train[i,2] == 'Yes' && train[i,3] == 'late2'){
+    l2a = l2a + 1
+  }
+  else if(train[i,2] == 'No' && train[i,3] == 'late2'){
+    l2n = l2n + 1
+  }
+  else if(train[i,2] == 'Yes' && train[i,3] == 'odd'){
+    oa = oa + 1
+  }
+  else if(train[i,2] == 'No' && train[i,3] == 'odd'){
+    on = on + 1
+  }
+}
+
+## Calculate reasons for being added to further review by early and late corpuses
+eu = 0
+ent = 0
+enu = 0
+ec = 0
+lu = 0
+lnt = 0
+lnu = 0
+lc = 0
+l2u = 0
+l2nt = 0
+l2nu = 0
+l2c = 0
+ou = 0
+ont = 0
+onu = 0
+oc = 0
+
+for(i in 1:length(further_review)){
+  if(review[i,2] == 'Uncertain' && review[i,3] == 'early'){
+    eu = eu + 1
+  }
+  else if(review[i,2] == 'NoText' && review[i,3] == 'early'){
+    ent = ent + 1
+  }
+  else if(review[i,2] == 'null' && review[i,3] == 'early'){
+    enu = enu + 1
+  }
+  else if((review[i,2] == 'Yes' || review[i,2] == 'No') && review[i,3] == 'early'){
+    ec = ec + 1
+  }
+  else if(review[i,2] == 'Uncertain' && review[i,3] == 'late'){
+    lu = lu + 1
+  }
+  else if(review[i,2] == 'NoText' && review[i,3] == 'late'){
+    lnt = lnt + 1
+  }
+  else if(review[i,2] == 'null' && review[i,3] == 'late'){
+    lnu = lnu + 1
+  }
+  else if((review[i,2] == 'Yes' || review[i,2] == 'No') && review[i,3] == 'late'){
+    lc = lc + 1
+  }
+  else if(review[i,2] == 'Uncertain' && review[i,3] == 'late2'){
+    l2u = l2u + 1
+  }
+  else if(review[i,2] == 'NoText' && review[i,3] == 'late2'){
+    l2nt = l2nt + 1
+  }
+  else if(review[i,2] == 'null' && review[i,3] == 'late2'){
+    l2nu = l2nu + 1
+  }
+  else if((review[i,2] == 'Yes' || review[i,2] == 'No') && review[i,3] == 'late2'){
+    l2c = l2c + 1
+  }
+  else if(review[i,2] == 'Uncertain' && review[i,3] == 'odd'){
+    ou = ou + 1
+  }
+  else if(review[i,2] == 'NoText' && review[i,3] == 'odd'){
+    ont = ont + 1
+  }
+  else if(review[i,2] == 'null' && review[i,3] == 'odd'){
+    onu = onu + 1
+  }
+  else if((review[i,2] == 'Yes' || review[i,2] == 'No') && review[i,3] == 'odd'){
+    l2c = l2c + 1
+  }
+}
+
+```
+
+```{r}
+## Pseudocode for crosstreking subject_ids, creating 
+
+WORK_DIR = "/Users/mikaylabuckley/Desktop"
+setwd(WORK_DIR)
+
+# read in Zooniverse SUBJECT export (mID, subject_id, and expedition)
+data = read.csv('NfN_subj_export.csv', stringsAsFactors=FALSE)
+  # From the "metadata" column, extract the "subjectId" and CORRESPONDING subject_id and workflow_ids
+  data <- select(data, c("metadata", "subject_id", "workflow_id"))
+  for(i in 1:length(data[,1])){
+    data[i,1] = sub('.*subjectId":"', "", data[i,1])
+    data[i,1] = sub('",".*', "", data[i,1])
+  }
+  ind_1 <- as.matrix(data)
+
+# read in Biospex grid export (m_id and coreid)
+data <- read.csv('/Users/mikaylabuckley/Desktop/Biospex_grid_main2.csv')
+  # m_id column and coreid column
+  data <- as.matrix(data)
+  data2 <- data[,1:2]
+  cols <- c("m_id", "coreid")
+  colnames(data2) <- cols
+  ind_2 <- as.matrix(data2)
+  
+# read in the training data file (subject_id and classification)
+data = read.csv('training_data.csv')
+  # keep the subject_id and classification
+  data <- t(data)
+  data <- data[2:length(data[,1]),]
+  cols <- c("subject_id_2", "class")
+  colnames(data) <- cols
+  ind_3 <- as.matrix(data)
+  
+# remove records from ind_1 (NfN subject export) that are not in ind_3 (NfN results)
+    # results in metadata_id, subject_id, and workflow_id of all subjects in training_data
+ind_1_test <- ind_1[which(ind_1[,2] %in% ind_3[,1]),]
+ind_1_test <- ind_1_test[order(ind_1_test[,1]),]
+
+# remove records from ind_2 (biospex grid/coreid) that are not in NEW ind_1
+  # results in metadata_id and coreid of all subjects in training_data
+ind_2_test <- ind_2[which(ind_2[,1] %in% ind_1_test[,1]),]
+ind_2_test <- ind_2_test[order(ind_2_test[,1]),]
+
+# combine the newly truncated sub_indices into a single index and rename columns for output
+index <- cbind(ind_2_test[,2], ind_3[,2])
+index <- data.frame(index)
+colnames(index) <- c("coreid", "class")
+
+# Set directories for each group of early files
+EARLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/early_DwCA/occurrence_early_parsed.csv"
+EARLIER_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/earlier_DwCA/earlier_occurrence_raw_subset.csv"
+EARLIEST_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/earliest_DwCA/earliest_occurrence_raw_subset.csv"
+
+# Set directories for each group of late files
+LATE_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/late_DwCA/late_occurrence_raw_subset.csv"
+LATER_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/later_DwCA/later_occurrence_raw_subset.csv"
+LATEST_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/latest_DwCA/latest_occurrence_raw_subset.csv"
+
+# Set directories for each group of odd files
+ODD_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/odd_DwCA/odd_occurrence_raw_subset.csv"
+ODDLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/oddly_DwCA/oddly_occurrence_raw_subset.csv"
+
+ABNORMAL_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/abnormal_DwCA/abnormal_occurrence_raw_subset.csv"
+ABNORMALLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/abnormally_DwCA/abnormally_occurrence_raw_subset.csv"
+
+UNUSUAL_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/unusual_DwCA/unusual_occurrence_raw_subset.csv"
+UNUSUALLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/unusually_DwCA/unusually_occurrence_raw_subset.csv"
+
+THAN_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/weird_DwCA/weird_occurrence_raw_subset.csv"
+WEIRD_DIR = "/Users/mikaylabuckley/Desktop/DIS/Mikayla_DwC_files/than_DwCA/than_occurrence_raw_subset.csv"
+
+meta_index <- array(data = "", c(length(index[,1]), 7))
+colnames(meta_index) <- c("class", "coreid", "text", "year", "country", "kingdom", "phylum")
+file_list <- c(EARLY_DIR, EARLIER_DIR, EARLIEST_DIR, LATE_DIR, LATER_DIR, LATEST_DIR, ODD_DIR, ODDLY_DIR, ABNORMAL_DIR, ABNORMALLY_DIR, UNUSUAL_DIR, UNUSUALLY_DIR, THAN_DIR, WEIRD_DIR)
+# read in all occurrence files and store in a giant dataframe with the metadata
+  # bind_rows()... look into this maybe idk I forget why I put this here tbh
+  k = 1 # index for meta, should end as 12,098
+  for(file in file_list){
+    data <- read.csv(file)
+    # remove records that aren't in the index (weren't classified)
+    data <- data[which(data[,1] %in% index[,1]),]
+    # sort by coreid, do we really need this?
+    data <- data[order(data[,1]),]
+    data <- data[,1:6]
+    
+    # match the coreids and combine the text/metadata with the classification
+    for(i in 1:length(data[,1])){ # index for current occurrence file
+      for(j in 1:length(index[,1])){ # index for index, should end at 12,098 each iteration
+        if(data[i,1] == index[j,1]){
+          if(index[j,2] == 'No'){
+            meta_index[k,1] = as.integer(0)
+            meta_index[k,2] = as.character(data[i,1])
+            meta_index[k,3] = as.character(data[i,2])
+            meta_index[k,4] = as.integer(data[i,3])
+            meta_index[k,5] = as.character(data[i,4])
+            meta_index[k,6] = as.character(data[i,5])
+            meta_index[k,7] = as.character(data[i,6])
+            print(k)
+            k = k+1
+          }
+          else if(index[j,2] == 'Yes'){
+            meta_index[k,1] = as.integer(1)
+            meta_index[k,2] = as.character(data[i,1])
+            meta_index[k,3] = as.character(data[i,2])
+            meta_index[k,4] = as.integer(data[i,3])
+            meta_index[k,5] = as.character(data[i,4])
+            meta_index[k,6] = as.character(data[i,5])
+            meta_index[k,7] = as.character(data[i,6])
+            print(k)
+            k = k+1
+          }
+          else{
+            print("ERROR!")
+            break
+          }
+        }
+      }
+    }
+  }
+  
+  # Decision tree in R example: https://www.guru99.com/r-decision-trees.html
+  # Congress text classification example: https://cfss.uchicago.edu/notes/supervised-text-classification/
+    # uses tidy text dataframes
+  # Another tidy text classification example (project gutenberg): https://juliasilge.com/blog/tidy-text-classification/
+  # Tidy tutorial: https://www.tidytextmining.com/
+  
+  meta_index <- read.csv("/Users/mikaylabuckley/Desktop/meta_index.csv")
+    
+  x <- seq(1, length(meta_index[,1]), 2)
+  y <- seq(2, length(meta_index[,1]), 2)
+  
+  # Create a train set and a test set (odds train, evens test)
+  setwd("/Users/mikaylabuckley/Desktop/DIS")
+  train_data <- meta_index[x,]
+  train_data <- as.list(as.data.frame(train_data))
+  write.csv(train_data, "train.csv")
+  
+  test_data <- meta_index[y,]
+  test_data <- as.list(as.data.frame(test_data))
+  write.csv(train_data, "test.csv")
+  
+  # Check that test and train have about the same proportion of classifications
+  prop.table(table(train_data$class))
+  prop.table(table(test_data$class))
+  
+  # # Remove the text column and coreid from the train and test sets for now...
+  # train <- cbind(train_data$class, train_data$year, train_data$country, train_data$kingdom, train_data$phylum)
+  # colnames(train) <- c("class", "year", "country", "kingdom", "phylum")
+  # train <- as.list(as.data.frame(train))
+  # 
+  # test <- cbind(test_data$class, test_data$year, test_data$country, test_data$kingdom, test_data$phylum)
+  # colnames(test) <- c("class", "year", "country", "kingdom", "phylum")
+  # test <- as.list(as.data.frame(test))
+
+"""
+  #Convert to factor level
+  for(i in 1:length(train_data$year)){
+    print(i)
+    if(as.integer(s) < 1700){
+      train_data$year[i]<- 1
+    } 
+    else if(as.integer(train_data$year[i]) >= 1700 & as.integer(train_data$year[i]) < 1800){
+      train_data$year[i]<- 2
+    } 
+    else if(as.integer(train_data$year[i]) >= 1800 & as.integer(train_data$year[i]) < 1900){
+      train_data$year[i]<- 3
+    } 
+    else if(as.integer(train_data$year[i]) >= 1900 & as.integer(train_data$year[i]) < 2000){
+      train_data$year[i]<- 4
+    } 
+    else if(as.integer(train_data$year[i]) >= 2000){
+      train_data$year[i]<- 5
+    } 
+    else if(is.na(train_data$year[i])){
+      train_data$year[i]<- 6
+    }
+  }
+  
+  library(magrittr)
+	train <- train_data %>% 
+	  mutate(year = factor(train_data$year, levels = c(1, 2, 3, 4, 5, 6), labels = c('Pre-1700', '1700', '1800', '1900', '2000', 'Unknown)))
+	         
+	class = factor(class, levels = c(0, 1), labels = c('Non-anomaly', 'Anomally')))
+  
+  # Decision Tree
+  library(rpart)
+  install.packages("rpart.plot")
+  library(rpart.plot)
+  fit <- rpart(class~., data = train, method = 'class')
+  rpart.plot(fit, extra = 106)
+  
+# make a list of all core_ids in the index 
+  # select columns in giant dataframe that match index coreids using select to minimize searching time
+  # sort each file by core_id and left join them
+```
+
+
+```{r}
+# Check agreement of tasks for classifications from all users in the training set data
+library(abind)
+maj <- vector()
+agree <- vector()
+id <- vector()
+for(i in 1:length(training_set)){
+  index = which(subj == training_set[[i]], arr.ind =TRUE)
+  id <- append(id, result[index,1])
+  maj <- append(maj, result[index,12])
+  agree <- append(agree, result[index,13])
+}
+training_set_matrix <- abind(maj, agree, rev.along = 0) 
+rownames(training_set_matrix) <- id
+```
+
+### EARLY FILE MANIPULATION FOR BIOSPEX
+```{r}
+# Set directories for each group of early files
+EARLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_early/early_iDigBio_download_9-26-19"
+EARLIER_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_early/earlier_iDigBio_10-7-19"
+EARLIEST_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_early/earliest_iDigBio_10-7-19"
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLY BIOSPEX DwCA FILE PREPARATION ***see below for added multimedia and occurrence_raw edits***
+
+  setwd(EARLY_DIR)
+  data = read.csv("occurrence_raw.csv")
+  
+  NameList <- c("dwc.occurrenceRemarks", "coreid", "dwc.year", "dwc.country", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  data <- select(data, NameList)
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+  write.csv(data,file='early_parsed.csv')
+  
+```
+
+```{r}
+## Frist 1000 records from early_parsed.csv
+
+# Read in the occurrenceRemarks to "get familiar" with the data
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+  data <- read.csv('early_parsed.csv')
+  data <- data[1:1000,1:2]
+  write.csv(data,'early_1000.csv')
+```
+
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLIER BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(EARLIER_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  earlierData <- select(data, NameList)
+  colnames(earlierData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early/earlier_DwCA"))
+  write.csv(earlierData,file='earlier_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+  write.csv(text,file='earlier_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(earlierData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(EARLIER_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  earlierData <- select(data, NameList)
+  colnames(earlierData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early/earlier_DwCA"))
+  write.csv(earlierData,file='earlier_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(earlierData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLIEST BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(EARLIEST_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  earliestData <- select(data, NameList)
+  colnames(earliestData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early/earliest_DwCA"))
+  write.csv(earliestData,file='earliest_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+  write.csv(text,file='earliest_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(earlierData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(EARLIEST_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  earliestData <- select(data, NameList)
+  colnames(earliestData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early/earliest_DwCA"))
+  write.csv(earliestData,file='earliest_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(earlierData)
+  rm(data)
+```
+
+### LATE FILE MANIPULATION FOR BIOSPEX
+```{r}
+# Set directories for each group of late files
+LATE_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_late/late_iDigBio_10-10-19"
+LATER_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_late/later_iDigBio_10-10-19"
+LATEST_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_late/latest_iDigBio_10-10-19"
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## LATE BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(LATE_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  lateData <- select(data, NameList)
+  colnames(lateData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late/late_DwCA"))
+  write.csv(lateData,file='late_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late"))
+  #write.csv(text,file='late_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(lateData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(LATE_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  lateData <- select(data, NameList)
+  colnames(lateData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late/late_DwCA"))
+  write.csv(lateData,file='late_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(lateData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## LATER BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(LATER_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  laterData <- select(data, NameList)
+  colnames(laterData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late/later_DwCA"))
+  write.csv(laterData,file='later_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late"))
+  #write.csv(text,file='late_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(laterData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(LATER_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  laterData <- select(data, NameList)
+  colnames(laterData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late/later_DwCA"))
+  write.csv(laterData,file='later_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(laterData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## LATEST BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(LATEST_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  latestData <- select(data, NameList)
+  colnames(latestData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late/latest_DwCA"))
+  write.csv(latestData,file='latest_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late"))
+  #write.csv(text,file='late_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(latestData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(LATEST_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  latestData <- select(data, NameList)
+  colnames(latestData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late/latest_DwCA"))
+  write.csv(latestData,file='latest_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(latestData)
+  rm(data)
+```
+
+### ODD FILE MANIPULATION FOR BIOSPEX
+```{r}
+# Set directories for each group of late files
+ABNORMAL_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/abnormal_iDigBio_10-10-19"
+ABNORMALLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/abnormally_iDigBio_10-10-19"
+ODD_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/odd_iDigBio_10-10-19"
+ODDLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/oddly_iDigBio_10-10-19"
+THAN_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/than_iDigBio_10-10-19"
+UNUSUAL_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/unusual_iDigBio_10-10-19"
+UNUSUALLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/unusually_iDigBio_10-10-19"
+WEIRD_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/weird_iDigBio_10-10-19"
+WEIRDLY_DIR = "/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_odd/weirdly_iDigBio_10-10-19"
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## ABNORMAL BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(ABNORMAL_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  abnormalData <- select(data, NameList)
+  colnames(abnormalData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/abnormal_DwCA"))
+  write.csv(abnormalData,file='abnormal_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late"))
+  #write.csv(text,file='late_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(abnormalData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(ABNORMAL_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  abnormalData <- select(data, NameList)
+  colnames(abnormalData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/abnormal_DwCA"))
+  write.csv(abnormalData,file='abnormal_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(abnormalData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## ABNORMALLY BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(ABNORMALLY_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  abnormallyData <- select(data, NameList)
+  colnames(abnormallyData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/abnormally_DwCA"))
+  write.csv(abnormallyData,file='abnormally_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_late"))
+  #write.csv(text,file='late_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(abnormallyData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(ABNORMALLY_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  abnormallyData <- select(data, NameList)
+  colnames(abnormallyData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/abnormally_DwCA"))
+  write.csv(abnormallyData,file='abnormally_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(abnormallyData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## ODD BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(ODD_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  oddData <- select(data, NameList)
+  colnames(oddData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/odd_DwCA"))
+  write.csv(oddData,file='odd_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(oddData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(ODD_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  oddData <- select(data, NameList)
+  colnames(oddData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/odd_DwCA"))
+  write.csv(oddData,file='odd_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(oddData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## ODDLY BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(ODDLY_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  oddlyData <- select(data, NameList)
+  colnames(oddlyData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/oddly_DwCA"))
+  write.csv(oddlyData,file='oddly_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(oddlyData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(ODDLY_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  oddlyData <- select(data, NameList)
+  colnames(oddlyData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/oddly_DwCA"))
+  write.csv(oddlyData,file='oddly_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(oddlyData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## THAN BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(THAN_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  thanData <- select(data, NameList)
+  colnames(thanData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/than_DwCA"))
+  write.csv(thanData,file='than_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(thanData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(THAN_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  thanData <- select(data, NameList)
+  colnames(thanData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/than_DwCA"))
+  write.csv(thanData,file='than_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(thanData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## UNUSUAL BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(UNUSUAL_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  unusualData <- select(data, NameList)
+  colnames(unusualData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/unusual_DwCA"))
+  write.csv(unusualData,file='unusual_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(unusualData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(UNUSUAL_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  unusualData <- select(data, NameList)
+  colnames(unusualData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/unusual_DwCA"))
+  write.csv(unusualData,file='unusual_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(unusualData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## UNUSUALLY BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(UNUSUALLY_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  unusuallyData <- select(data, NameList)
+  colnames(unusuallyData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/unusually_DwCA"))
+  write.csv(unusuallyData,file='unusually_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(unusuallyData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(UNUSUALLY_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  unusuallyData <- select(data, NameList)
+  colnames(unusuallyData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/unusually_DwCA"))
+  write.csv(unusuallyData,file='unusually_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(unusuallyData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## WEIRD BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(WEIRD_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  weirdData <- select(data, NameList)
+  colnames(weirdData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/weird_DwCA"))
+  write.csv(weirdData,file='weird_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(weirdData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(WEIRD_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  weirdData <- select(data, NameList)
+  colnames(weirdData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/weird_DwCA"))
+  write.csv(weirdData,file='weird_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(weirdData)
+  rm(data)
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## WEIRDLY BIOSPEX DwCA FILE PREPARATION
+
+  ### PREPARE occurrence_raw.csv file
+  setwd(WEIRDLY_DIR)
+  data = read.csv("occurrence_raw.csv")
+
+  NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+  weirdlyData <- select(data, NameList)
+  colnames(weirdlyData) <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+  
+  # Write out the updated occurrence_raw.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/weirdly_DwCA"))
+  write.csv(weirdlyData,file='weirdly_occurrence_raw_subset.csv')
+  
+  # Write out the occurrenceRemarks to "get familiar" with the data with OpenRefine
+  #setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd"))
+  #write.csv(text,file='odd_occurrenceRemarks.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(weirdlyData)
+  rm(data)
+  
+  ### PREPARE multimedia.csv file
+  setwd(WEIRDLY_DIR)
+  data = read.csv("multimedia.csv")
+
+  NameList <- c("coreid", "ac.accessURI", "idigbio.uuid", "idigbio.recordIds")
+  weirdlyData <- select(data, NameList)
+  colnames(weirdlyData) <- c("coreid", "accessURI", "uuid", "recordId")
+  
+  # Write out the updated multimedia.csv file
+  setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_odd/weirdly_DwCA"))
+  write.csv(weirdlyData,file='weirdly_multimedia.csv')
+  
+  ## REMOVE OBJECTS
+  rm(NameList)
+  rm(weirdlyData)
+  rm(data)
+```
+
+
+### EARLY QUANTEDA ANALYSIS PIPELINE
+## EARLY CORPUS CREATION
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLY QUANTEDA CORPUS
+
+## Import the subset matrix and create a corpus object
+data2 <- read.csv("/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_early/early_iDigBio_download_9-26-19/occurrence_raw.csv")
+NameList <- c("coreid", "dwc.occurrenceRemarks", "dwc.year", "dwc.country", "dwc.kingdom", "dwc.phylum")
+data2 <- select(data2, NameList)
+#new_names <- c("docid_field", "text_field")
+#colnames(data2) <- new_names
+data2[2] <- as.character(unlist(data2[2]))
+early_corpus <- corpus(data2, docid_field = "coreid", text_field = "dwc.occurrenceRemarks")
+
+summary <- data.frame(summary(early_corpus))
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(summary,file='early_corpus_summary.csv')
+```
+
+```{r}
+# Plotting token numbers vs year
+if (require(ggplot2))
+    ggplot(data = summary, aes(x = dwc.year, y = Tokens, group = 1)) + geom_line() + geom_point()
+```
+
+```{r}
+# Key words in context surrounding the target word
+kwic_early <- kwic(early_corpus, pattern = "early")
+```
+
+```{r}
+### Create a document-feature matrix for the early_corpus
+# Tokenization
+early_tokens <- tokens(early_corpus, remove_numbers = TRUE,  remove_punct = TRUE)
+
+# Compound tokens
+#tokens_compound(pattern = phrase(c("New York City", "United States")))
+
+# Document-feature matrix
+dfmat_early <- dfm(early_corpus, remove_numbers = TRUE,  remove_punct = TRUE)
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(dfmat_early,file='early_corpus_dfmat.csv')
+
+c1 <- colnames(dfmat_early)
+freq <- array(data = NA,c(length(c1),2)) 
+freq[,1] <- c1
+for(i in 1:length(c1)){
+  freq[i,2] = sum(dfmat_early[,i])
+}
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(freq,file='early_corpus_freq.csv')
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLIER QUANTEDA CORPUS
+rm(data2)
+## Import the subset matrix and create a corpus object
+data2 <- read.csv("/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_early/earlier_DwCA/earlier_occurrence_raw_subset.csv")
+NameList <- c("id", "occurrenceRemarks", "year", "country", "kingdom", "phylum")
+data2 <- select(data2, NameList)
+data2[2] <- as.character(unlist(data2[2]))
+earlier_corpus <- corpus(data2, docid_field = "id", text_field = "occurrenceRemarks")
+
+summary <- data.frame(summary(earlier_corpus))
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(summary,file='earlier_corpus_summary.csv')
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLIEST QUANTEDA CORPUS
+
+## Import the subset matrix and create a corpus object
+data2 <- read.csv("/Users/mikaylabuckley/Desktop/DIS/DIS_corpus_files/corpus_early/earliest_iDigBio_10-7-19/occurrence_raw.csv")
+data2 <- data.frame(data2[,2:7])
+data2$text <- as.character(data2$text)
+earliest_corpus <- corpus(data2)
+
+summary <- data.frame(summary(earliest_corpus))
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(summary,file='earliest_corpus_summary.csv')
+```
+
+## EARLY TOKENIZATION AND FREQ ANALYSIS
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLY TOKENIZATION AND FREQ ANALYSIS
+
+toks <- tokens(early_corpus, remove_punct = TRUE) 
+head(toks[[1]], 50)
+dfmat <- dfm(toks)
+tstat_freq <- textstat_frequency(dfmat)
+head(tstat_freq, 20)
+
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(tstat_freq,file='early_corpus_token_frequency.csv')
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLIER TOKENIZATION AND FREQ ANALYSIS
+
+toks <- tokens(earlier_corpus, remove_punct = TRUE) 
+head(toks[[1]], 50)
+dfmat <- dfm(toks)
+tstat_freq <- textstat_frequency(dfmat)
+head(tstat_freq, 20)
+
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(tstat_freq,file='earlier_corpus_token_frequency.csv')
+```
+
+```{r}
+### WORKS! DO NOT DELETE OR EDIT
+## EARLIEST TOKENIZATION AND FREQ ANALYSIS
+
+toks <- tokens(earliest_corpus, remove_punct = TRUE) 
+head(toks[[1]], 50)
+dfmat <- dfm(toks)
+tstat_freq <- textstat_frequency(dfmat)
+head(tstat_freq, 20)
+
+setwd(file.path("~/Desktop/DIS/DIS_corpus_files/corpus_early"))
+write.csv(tstat_freq,file='earliest_corpus_token_frequency.csv')
+```
+
+```{r}
+### Combining all corpuses into one
+corpus_total <- early_corpus + late_corpus + odd_corpus
+```
+
+
+```{r}
+## Key words in context
+## Compound tokens of multiple words
+## Document feature matrix
+  # quanteda can create a document feature matrix to be used in other tools
+```
